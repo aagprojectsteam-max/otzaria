@@ -125,5 +125,5 @@ class PluginShortcutException implements Exception {
   const PluginShortcutException(this.code, this.message);
 
   @override
-  String toString() => 'error.$code: $message';
+  String toString() => '$code: $message';
 }

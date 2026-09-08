@@ -165,5 +165,14 @@ void main() {
     test('find returns null for unknown plugin or id', () {
       expect(registry.find('nope', 's'), isNull);
     });
+
+    test('חריגת קיצור שומרת על קוד השגיאה של ה-RPC', () {
+      const error = PluginShortcutException(
+        'error.invalid_params',
+        'invalid shortcut',
+      );
+
+      expect(error.toString(), 'error.invalid_params: invalid shortcut');
+    });
   });
 }
