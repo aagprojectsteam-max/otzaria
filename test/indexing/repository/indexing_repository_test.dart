@@ -885,6 +885,105 @@ void main() {
     });
   });
 
+  group('IndexingRepository — עבודת data URI מחוץ לפריים', () {
+    // מעל 1MB הסריקה נפרסת למנות על ה-thread הקורא והניקוי עובר ל-isolate;
+    // הבדיקות מקבעות שהתוצאה זהה בשני צדי הסף — טביעת האצבע נגזרת ממנה.
+    String bigTextWithImage() =>
+        'לפני\n${'מילה ' * 300000}\ndata:image/png;base64,${'A' * 200000}\nאחרי';
+
+    /// bytes שבהם ה-`data:` מתחיל בדיוק ב-[offset] (ASCII, ולכן היסט
+    /// הבייטים הוא גם היסט התווים).
+    Uint8List bytesWithUriAt(int offset) {
+      final uri = utf8.encode('data:image/png;base64,${'A' * 200}');
+      return Uint8List(offset + uri.length + 16)
+        ..fillRange(0, offset, 0x78) // 'x'
+        ..setRange(offset, offset + uri.length, uri)
+        ..fillRange(offset + uri.length, offset + uri.length + 16, 0x79); // 'y'
+    }
+
+    test('bytes קטנים: אותה תוצאה כמו המסלול הסינכרוני', () async {
+      final clean = Uint8List.fromList(utf8.encode('טקסט נקי בלי תמונות'));
+      expect(await IndexingRepository.cleanDataUrisOffFrame(clean), isNull);
+
+      final withImage = Uint8List.fromList(
+        utf8.encode('שורה\n<img src="data:image/png;base64,${'A' * 100}"/>'),
+      );
+      expect(
+        await IndexingRepository.cleanDataUrisOffFrame(withImage),
+        IndexingRepository.stripDataUrisForIndex(
+          utf8.decode(withImage, allowMalformed: true),
+        ),
+      );
+    });
+
+    test('bytes גדולים (מסלול ה-isolate): אותה תוצאה בדיוק', () async {
+      final text = bigTextWithImage();
+      final bytes = Uint8List.fromList(utf8.encode(text));
+      expect(bytes.length, greaterThan(1 << 20));
+
+      expect(
+        await IndexingRepository.cleanDataUrisOffFrame(bytes),
+        IndexingRepository.stripDataUrisForIndex(
+          utf8.decode(bytes, allowMalformed: true),
+        ),
+      );
+    });
+
+    test('bytes גדולים בלי data URI נשארים במסלול ה-bytes', () async {
+      // שלוש מנות סריקה ומעלה, כדי לכסות גם את המנה האחרונה החלקית.
+      final bytes = Uint8List((3 << 20) * 4 + 777)
+        ..fillRange(0, (3 << 20) * 4 + 777, 0x78);
+      expect(await IndexingRepository.cleanDataUrisOffFrame(bytes), isNull);
+    });
+
+    test('data: היושב על תפר בין מנות הסריקה אינו מפוספס', () async {
+      const chunk = 4 << 20;
+      // התאמה שמתחילה בארבעת הבייטים שלפני התפר נחתכת בין מנה למנה; סריקה
+      // בלי חפיפה מחזירה כאן null, כלומר מסמנת ספר מצויר כנקי.
+      for (final offset in [chunk - 4, chunk - 3, chunk - 2, chunk - 1]) {
+        final bytes = bytesWithUriAt(offset);
+        final raw = utf8.decode(bytes, allowMalformed: true);
+        final expected = IndexingRepository.stripDataUrisForIndex(raw);
+        expect(expected, isNot(raw), reason: 'התפר בהיסט $offset לא נוקה');
+        expect(
+          await IndexingRepository.cleanDataUrisOffFrame(bytes),
+          expected,
+          reason: 'data: על התפר בהיסט $offset',
+        );
+      }
+    });
+
+    test(
+      'טקסט גדול (מסלול ה-isolate): אותה תוצאה כמו הניקוי הסינכרוני',
+      () async {
+        final text = bigTextWithImage();
+        expect(text.length, greaterThan(1 << 20));
+
+        expect(
+          await IndexingRepository.stripDataUrisOffFrame(text),
+          IndexingRepository.stripDataUrisForIndex(text),
+        );
+      },
+    );
+
+    test('טקסט נקי גדול: אותה תוצאה, בלי סריקה כפולה על החוט הקורא', () async {
+      final text = 'מילה ' * 300000;
+      expect(text.length, greaterThan(1 << 20));
+
+      // גם הסריקה עצמה עוברת ל-isolate; בדיקה מקדימה כאן הייתה סורקת את
+      // הטקסט פעמיים על החוט שמצייר פריימים (המחרוזת נשלחת בלי העתקה).
+      expect(await IndexingRepository.stripDataUrisOffFrame(text), text);
+    });
+
+    test('טקסט קטן חוזר דרך המסלול הסינכרוני (אותו מופע)', () async {
+      const text = 'טקסט רגיל בלי תמונות';
+      expect(
+        identical(await IndexingRepository.stripDataUrisOffFrame(text), text),
+        isTrue,
+      );
+    });
+  });
+
   group('IndexingRepository.indexAllBooks', () {
     test('includePdfBooks=false אינו כותב PDF לאינדקס ההפצה', () async {
       final engine = _RecordingSearchEngine();
@@ -1756,6 +1855,33 @@ void main() {
     );
   });
 
+  group('IndexingRepository — ביטול בתוך טעינת מקור הספר', () {
+    test('indexBooks עוצר ואינו מסמן את הספר כמאונדקס', () async {
+      final engine = _RecordingSearchEngine();
+      final provider = _RecordingTantivyDataProvider(engine);
+      final first = TextBook(id: 1, title: 'שבת');
+      final second = TextBook(id: 2, title: 'עירובין');
+      final library = _buildLibrary(bavliBooks: const []);
+      library.books.addAll([first, second]);
+
+      final repository = _CancelDuringLoadRepository(provider);
+      final progress = <(int, int)>[];
+      final result = await repository.indexBooks(
+        [first, second],
+        library,
+        onProgress: (p, t) => progress.add((p, t)),
+      );
+
+      expect(result.completed, isFalse);
+      // רק הספר הראשון נטען, והוא לא נרשם כמאונדקס.
+      expect(repository.loadedTitles, ['שבת']);
+      expect(provider.indexedFilePaths, isEmpty);
+      expect(result.indexedBooks, 0);
+      // הדיווח נשאר כשהיה: הספר הנוכחי מדווח בתחילת עיבודו.
+      expect(progress, [(1, 2)]);
+    });
+  });
+
   group('IndexingRepository.orderBooksForIndexing', () {
     test('ספרי PDF נדחפים לסוף, סדר שאר הספרים נשמר', () {
       final t1 = TextBook(title: 'א');
@@ -2125,6 +2251,25 @@ class _ReindexProbeRepository extends IndexingRepository {
       totalBooks: books.length,
       indexedBooks: books.length,
     );
+  }
+}
+
+/// טעינת מקור הספר מתפרקת לשלבים עם yield (קריאת ה-DB במנות, עבודת ה-data
+/// URI ב-isolate); הבדיקה מקבעת שביטול שנפל בתוך הטעינה עדיין נכבד.
+class _CancelDuringLoadRepository extends IndexingRepository {
+  _CancelDuringLoadRepository(this.provider) : super(provider);
+
+  final _RecordingTantivyDataProvider provider;
+  final loadedTitles = <String>[];
+
+  @override
+  Future<({Uint8List? bytes, String? text})> loadTextBookSource(
+    TextBook book,
+  ) async {
+    loadedTitles.add(book.title);
+    await Future<void>.delayed(Duration.zero);
+    provider.isIndexing.value = false; // לחיצת ביטול בזמן טעינת התוכן
+    return (bytes: null, text: 'תוכן');
   }
 }
 
