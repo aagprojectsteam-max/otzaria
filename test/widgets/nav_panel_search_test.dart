@@ -23,6 +23,8 @@ class _Host extends StatefulWidget {
   /// שבחלונית החיפוש, שהיא זו שנכנסה לעץ הנגישות במלבן מכווץ.
   final bool showTooltipAction;
 
+  final double paneWidth;
+
   const _Host({
     this.isOpen = true,
     this.showPin = false,
@@ -30,6 +32,7 @@ class _Host extends StatefulWidget {
     this.onArrowDown,
     this.onArrowUp,
     this.showTooltipAction = false,
+    this.paneWidth = 300,
   });
 
   @override
@@ -74,7 +77,7 @@ class _HostState extends State<_Host> with SingleTickerProviderStateMixin {
               NavPanelSearchBar(
                 host: host,
                 isOpen: widget.isOpen,
-                paneWidth: 300,
+                paneWidth: widget.paneWidth,
                 isPinned: widget.isPinned,
                 onTogglePin: widget.showPin ? () {} : null,
               ),
@@ -674,6 +677,46 @@ void main() {
     await tester.pumpAndSettle();
     expect(_filterInSemantics(tester), isTrue);
     expect(tester.takeException(), isNull);
+
+    semantics.dispose();
+  });
+
+  // רגרסיה: תנאי דו-צדדי (`.abs()`) או רוחב שמונפש בפני עצמו משתיקים סרגל
+  // פתוח ומצויר במלואו בכל שינוי של רוחב החלונית — גרירת המפריד, מעבר
+  // compactMenuMode (2px), שינוי גודל חלון — ואז הוא אינו לחיץ ~300ms.
+  testWidgets('שינוי רוחב החלונית אינו משתיק סרגל פתוח', (tester) async {
+    final semantics = tester.ensureSemantics();
+
+    await tester.pumpWidget(wrap(const _Host(showTooltipAction: true)));
+    await tester.pumpAndSettle();
+
+    // הרחבה, צמצום, ושינוי זעיר של 2px — בכל אחד מהם הסרגל נשאר חי.
+    for (final paneWidth in const [500.0, 300.0, 302.0]) {
+      await tester.pumpWidget(
+        wrap(_Host(paneWidth: paneWidth, showTooltipAction: true)),
+      );
+      for (final step in const [
+        Duration.zero,
+        Duration(milliseconds: 60),
+        Duration(milliseconds: 150),
+        Duration(milliseconds: 240),
+        Duration(milliseconds: 400),
+      ]) {
+        await tester.pump(step);
+        expect(
+          find.byType(OtzariaSearchField).hitTestable(),
+          findsOneWidget,
+          reason: 'סרגל פתוח ברוחב $paneWidth חייב להישאר לחיץ',
+        );
+        expect(
+          _filterInSemantics(tester),
+          isTrue,
+          reason: 'סרגל פתוח ברוחב $paneWidth חייב להישאר בעץ הנגישות',
+        );
+        expect(tester.takeException(), isNull);
+      }
+      await tester.pumpAndSettle();
+    }
 
     semantics.dispose();
   });

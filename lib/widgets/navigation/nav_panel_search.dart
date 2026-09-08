@@ -420,22 +420,22 @@ class _NavPanelSearchBarState extends State<NavPanelSearchBar> {
         final effectiveWidth = constraints.hasBoundedWidth
             ? width.clamp(0.0, constraints.maxWidth)
             : width;
-        final targetWidth = widget.isOpen ? effectiveWidth : 0.0;
         // IntrinsicHeight: ה-OverflowBox דורש גובה חסום, וסרגל עליון עשוי לתת
         // גובה חופשי (Row בתוך Column).
         return IntrinsicHeight(
+          // מונפש שיעור הפתיחה ולא הרוחב עצמו: כך שינוי רוחב החלונית (גרירת
+          // המפריד, מעבר תפריט צפוף) עובר מיד, בלי פריימי חיתוך על סרגל פתוח.
           child: TweenAnimationBuilder<double>(
             duration: AppTokens.animPanelSlide,
             curve: Curves.easeInOut,
-            tween: Tween<double>(end: targetWidth),
-            builder: (context, currentWidth, child) {
+            tween: Tween<double>(end: widget.isOpen ? 1.0 : 0.0),
+            builder: (context, openFraction, child) {
               // ה-ClipRect מסתיר את הציור אך לא את ה-Semantics ואת ה-hit
-              // testing, ולכן כפתור שגולש ממנו נכנס לעץ הנגישות במלבן הפוך
-              // וזורק "Invisible SemanticsNodes" — עד שהרוחב מלא הוא מנוטרל.
-              final isFull =
-                  widget.isOpen && (effectiveWidth - currentWidth).abs() < 0.5;
+              // testing, ולכן בפריימי הפתיחה/הסגירה כפתור שגולש ממנו נכנס
+              // לעץ הנגישות במלבן הפוך וזורק "Invisible SemanticsNodes".
+              final isFull = widget.isOpen && openFraction >= 1.0;
               return SizedBox(
-                width: currentWidth,
+                width: effectiveWidth * openFraction,
                 child: ClipRect(
                   child: OverflowBox(
                     maxWidth: effectiveWidth,
