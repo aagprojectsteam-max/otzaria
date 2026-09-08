@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import 'package:flutter_settings_screens/flutter_settings_screens.dart';
@@ -18,12 +19,17 @@ class _Host extends StatefulWidget {
   final VoidCallback? onArrowDown;
   final VoidCallback? onArrowUp;
 
+  /// פעולת קצה עם tooltip בשדה של הלשונית הראשונה — כמו "סינון לפי מאפיין"
+  /// שבחלונית החיפוש, שהיא זו שנכנסה לעץ הנגישות במלבן מכווץ.
+  final bool showTooltipAction;
+
   const _Host({
     this.isOpen = true,
     this.showPin = false,
     this.isPinned = false,
     this.onArrowDown,
     this.onArrowUp,
+    this.showTooltipAction = false,
   });
 
   @override
@@ -103,6 +109,17 @@ class _HostState extends State<_Host> with SingleTickerProviderStateMixin {
                             hintText: 'איתור כותרת...',
                             onArrowDown: widget.onArrowDown,
                             onArrowUp: widget.onArrowUp,
+                            trailingActions: widget.showTooltipAction
+                                ? [
+                                    IconButton(
+                                      tooltip: _kFilterTooltip,
+                                      icon: const Icon(
+                                        FluentIcons.filter_24_regular,
+                                      ),
+                                      onPressed: () {},
+                                    ),
+                                  ]
+                                : const [],
                           ),
                           // כמו במסכי הייצור: שדה מקומי רק כשהלשונית אינה
                           // מורמת, והבדיקה רצה על context שמתחת ל-Scope.
@@ -244,6 +261,28 @@ class _TogglingActionHostState extends State<_TogglingActionHost> {
       ],
     );
   }
+}
+
+const _kFilterTooltip = 'סינון לפי מאפיין';
+
+/// האם פעולת הקצה מופיעה בעץ ה-Semantics. ה-tooltip יושב על תכונת
+/// `tooltip` של ה-node (ובגרסאות מסוימות על ה-label), ולכן שתיהן נבדקות.
+bool _filterInSemantics(WidgetTester tester) {
+  var found = false;
+  void visit(SemanticsNode node) {
+    final data = node.getSemanticsData();
+    if (data.tooltip == _kFilterTooltip || data.label == _kFilterTooltip) {
+      found = true;
+      return;
+    }
+    node.visitChildren((child) {
+      visit(child);
+      return !found;
+    });
+  }
+
+  visit(tester.getSemantics(find.byType(MaterialApp)));
+  return found;
 }
 
 void main() {
@@ -579,6 +618,77 @@ void main() {
     expect(tester.binding.focusManager.primaryFocus, beforeFocus);
     await tester.enterText(find.byType(OtzariaSearchField), 'אבג');
     expect(find.text('אבג'), findsOneWidget);
+  });
+
+  // רגרסיה: ה-ClipRect של הסרגל המכווץ הסתיר את הציור אך לא את ה-Semantics,
+  // ולכן פעולת הקצה נשארה node אינטראקטיבי במלבן ברוחב שלילי — ו-Flutter זרק
+  // "Invisible SemanticsNodes should not be added to the tree" בכל frame.
+  testWidgets('סרגל מכווץ אינו משאיר את פעולת הקצה בעץ הנגישות', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+
+    await tester.pumpWidget(wrap(const _Host(showTooltipAction: true)));
+    await tester.pumpAndSettle();
+
+    // פתוח לגמרי — הפעולה נגישה באמת.
+    expect(
+      _filterInSemantics(tester),
+      isTrue,
+      reason: 'בסרגל פתוח הפעולה חייבת להישאר נגישה',
+    );
+    expect(tester.takeException(), isNull);
+
+    // סגירה: גם באמצע האנימציה וגם בסופה אין node לפעולה ואין חריגה.
+    await tester.pumpWidget(
+      wrap(const _Host(isOpen: false, showTooltipAction: true)),
+    );
+    for (final step in const [
+      Duration.zero,
+      Duration(milliseconds: 60),
+      Duration(milliseconds: 150),
+      Duration(milliseconds: 240),
+      Duration(milliseconds: 400),
+    ]) {
+      await tester.pump(step);
+      expect(
+        _filterInSemantics(tester),
+        isFalse,
+        reason: 'בסרגל שאינו ברוחב מלא הפעולה מחוץ ל-clip',
+      );
+      expect(tester.takeException(), isNull);
+    }
+    expect(tester.getSize(find.byType(NavPanelSearchBar)).width, 0);
+
+    // פתיחה חזרה: פריימי האנימציה נקיים, ובסוף הפעולה נגישה שוב.
+    await tester.pumpWidget(wrap(const _Host(showTooltipAction: true)));
+    for (final step in const [
+      Duration.zero,
+      Duration(milliseconds: 60),
+      Duration(milliseconds: 150),
+    ]) {
+      await tester.pump(step);
+      expect(_filterInSemantics(tester), isFalse);
+      expect(tester.takeException(), isNull);
+    }
+    await tester.pumpAndSettle();
+    expect(_filterInSemantics(tester), isTrue);
+    expect(tester.takeException(), isNull);
+
+    semantics.dispose();
+  });
+
+  testWidgets('סרגל מכווץ אינו קולט לחיצות על פעולת הקצה', (tester) async {
+    await tester.pumpWidget(
+      wrap(const _Host(isOpen: false, showTooltipAction: true)),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byIcon(FluentIcons.filter_24_regular).hitTestable(),
+      findsNothing,
+      reason: 'IgnorePointer מונע מהכפתור המוסתר לתפוס לחיצות עכבר',
+    );
   });
 
   testWidgets('חץ ימין/שמאל נשארים בטקסט של שדה החיפוש', (tester) async {
