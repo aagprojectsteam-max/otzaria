@@ -348,9 +348,11 @@ class MainWindowScreenState extends State<MainWindowScreen>
   // האינדוקס רץ רק כשמזהה הבקשה מדווח ב-completedRefreshRequestIds.
   int _nextExternalReindexRequestId = 1;
   final Set<int> _pendingExternalReindexRequestIds = {};
-  // אחרי עדכון DB, StartIndexing מכסה את כל הספרייה; ה-gate מונע מ-listener
-  // ה-newBooksToIndex להריץ מסלול אינדוקס שני על אותו refresh.
-  bool _dbUpdateTriggeredFullIndex = false;
+  // הרענון שבו StartIndexing כבר מכסה את הספרים החדשים, והרענון שבו
+  // ReconcileIndex כבר מאנדקס מחדש כל ספר שטביעת אצבעו השתנתה. נקשר ל-state
+  // של אותו רענון (כל האותות נפלטים בו יחד), ולא לדגל גלובלי.
+  LibraryState? _refreshCoveredByStartIndexing;
+  LibraryState? _refreshCoveredByReconcile;
   bool _isShowingFullDownloadDialog = false;
   bool _isSearchOpen = false;
   bool _isFindRefOpen = false;
@@ -977,30 +979,24 @@ class MainWindowScreenState extends State<MainWindowScreen>
 
   /// מפעיל אינדוקס אחרי עדכון DB חי — בנפרד מ-_checkAndStartIndexing שרץ פעם
   /// אחת בעלייה. מבקש אינדוקס רק אם המשתמש הפעיל עדכון אינדקס אוטומטי.
-  void _indexAfterDbUpdateIfNeeded(
-    BuildContext context,
-    library_model.Library library,
-  ) {
+  void _indexAfterDbUpdateIfNeeded(BuildContext context, LibraryState state) {
     if (!_indexAfterLibraryReload) {
-      _dbUpdateTriggeredFullIndex = false;
       _reconcileAfterLibraryReload = false;
       return;
     }
     _indexAfterLibraryReload = false;
     final reconcile = _reconcileAfterLibraryReload;
     _reconcileAfterLibraryReload = false;
-    final autoUpdateIndex = context.read<SettingsBloc>().state.autoUpdateIndex;
-    // StartIndexing מאנדקס את כל הספרייה — מסמן ל-newBooksToIndex listener לדלג.
-    _dbUpdateTriggeredFullIndex = autoUpdateIndex;
-    if (autoUpdateIndex) {
-      final indexingBloc = context.read<IndexingBloc>();
-      // StartIndexing מוסיף ספרים חדשים (מדלג על קיימים); אחרי הורדה מלאה
-      // אין דיווח מי השתנה, אז ReconcileIndex משווה טביעות-אצבע ומאנדקס
-      // מחדש רק את הספרים ששונים. האירועים רצים סדרתית (sequential).
-      indexingBloc.add(StartIndexing(library));
-      if (reconcile) {
-        indexingBloc.add(ReconcileIndex(library));
-      }
+    if (!context.read<SettingsBloc>().state.autoUpdateIndex) return;
+    final indexingBloc = context.read<IndexingBloc>();
+    // StartIndexing מוסיף ספרים חדשים (מדלג על קיימים); אחרי הורדה מלאה
+    // אין דיווח מי השתנה, אז ReconcileIndex משווה טביעות-אצבע ומאנדקס
+    // מחדש רק את הספרים ששונים. האירועים רצים סדרתית (sequential).
+    indexingBloc.add(StartIndexing(state.library!));
+    _refreshCoveredByStartIndexing = state;
+    if (reconcile) {
+      indexingBloc.add(ReconcileIndex(state.library!));
+      _refreshCoveredByReconcile = state;
     }
   }
 
@@ -2592,7 +2588,7 @@ class MainWindowScreenState extends State<MainWindowScreen>
               // עצמאית ל-getLibrary שתתחרה בטעינת הספר הפעיל בעלייה.
               if (state.library != null) {
                 _checkAndStartIndexing(context, state.library!);
-                _indexAfterDbUpdateIfNeeded(context, state.library!);
+                _indexAfterDbUpdateIfNeeded(context, state);
                 // ניקוי רשומות אינדקס של ספרים שכבר אינם בספרייה (ספר אישי
                 // שנמחק, תיקייה שהוסרה). רץ על כל טעינת/רענון ספרייה, בתור
                 // העבודה הסדרתי — אחרי מסלולי האינדוקס של אותו רענון.
@@ -2622,14 +2618,13 @@ class MainWindowScreenState extends State<MainWindowScreen>
               _pendingExternalReindexRequestIds.removeAll(completed);
               final library = state.library;
               if (library == null) return;
-              // StartIndexing מכסה גם את הספרים החדשים של הרענון הזה — מסמן
-              // ל-listener של newBooksToIndex לדלג על מסלול אינדוקס כפול.
-              if (state.newBooksToIndex?.isNotEmpty ?? false) {
-                _dbUpdateTriggeredFullIndex = true;
-              }
               final indexingBloc = context.read<IndexingBloc>();
               indexingBloc.add(StartIndexing(library));
               indexingBloc.add(ReconcileIndex(library));
+              // שני האירועים כבר מכסים את הספרים החדשים ואת השונים של הרענון
+              // הזה — ה-listeners שאחריהם ידלגו עליו.
+              _refreshCoveredByStartIndexing = state;
+              _refreshCoveredByReconcile = state;
             },
           ),
           BlocListener<LibraryBloc, LibraryState>(
@@ -2637,6 +2632,8 @@ class MainWindowScreenState extends State<MainWindowScreen>
                 current.changedBooksToIndex != null &&
                 current.changedBooksToIndex!.isNotEmpty,
             listener: (context, state) {
+              // ReconcileIndex של אותו רענון כבר מאנדקס מחדש כל ספר שהשתנה.
+              if (identical(state, _refreshCoveredByReconcile)) return;
               // ספרים שתוכנם השתנה — רשומותיהם הישנות מוסרות ומאונדקסות מחדש.
               if (context.read<SettingsBloc>().state.autoUpdateIndex) {
                 context.read<IndexingBloc>().add(
@@ -2653,12 +2650,8 @@ class MainWindowScreenState extends State<MainWindowScreen>
                 current.newBooksToIndex != null &&
                 current.newBooksToIndex!.isNotEmpty,
             listener: (context, state) {
-              // אחרי עדכון DB, StartIndexing כבר אינדקס את כל הספרייה — מדלגים
-              // על מסלול האינדוקס השני (חד-פעמי לאותו refresh).
-              if (_dbUpdateTriggeredFullIndex) {
-                _dbUpdateTriggeredFullIndex = false;
-                return;
-              }
+              // StartIndexing של אותו רענון כבר מכסה את הספרים החדשים.
+              if (identical(state, _refreshCoveredByStartIndexing)) return;
               if (context.read<SettingsBloc>().state.autoUpdateIndex) {
                 context.read<IndexingBloc>().add(
                   IndexSpecificBooks(state.newBooksToIndex!, state.library!),
