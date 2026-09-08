@@ -795,9 +795,7 @@ dart format lib/file.dart    # Format ONLY files you modified
 | Context overlay panel | `test/widgets/context_overlay_panel_test.dart` |
 | Context menu (incl. hover preview + pinning) | `test/widgets/app_context_menu_test.dart` |
 | Link preview panel (placement, pin, scroll anchor) | `test/widgets/link_preview_overlay_test.dart` |
-| Dual adaptive reader pane | `test/widgets/dual_adaptive_reader_pane_test.dart` |
 | Nav rail item | `test/widgets/nav_rail_item_test.dart` |
-| Reader side panel shell | `test/widgets/reader_side_panel_shell_test.dart` |
 | Responsive action bar | `test/widgets/responsive_action_bar_test.dart` |
 | רוחב עמודת הטקסט (בסיס אזור הקריאה, יציב בפתיחת חלונית) | `test/widgets/layout/reading_area_width_test.dart` |
 | Scrollable list scrollbar | `test/widgets/scrollable_positioned_list_scrollbar_test.dart` |
@@ -819,7 +817,7 @@ dart format lib/file.dart    # Format ONLY files you modified
 |------|-----------|
 | Navigation BLoC | `test/navigation/navigation_bloc_test.dart` |
 | תפריט ההקשר של כרטיסיה (משותף לרצועה העליונה ולעמודה) | `test/navigation/tab_context_menu_test.dart` |
-| Startup guard / auto-reindex | `test/navigation/startup_work_gate_test.dart`, `…startup_auto_reindex_test.dart`, `…new_books_indexing_guard_test.dart` |
+| Startup guard / auto-reindex | `test/navigation/startup_work_gate_test.dart`, `…startup_auto_reindex_test.dart`, `…refresh_indexing_dedupe_test.dart` |
 
 **Other Features**
 | Area | Test File |
